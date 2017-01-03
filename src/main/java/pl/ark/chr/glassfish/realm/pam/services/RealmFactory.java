@@ -12,7 +12,7 @@ import java.util.Properties;
  *
  * @author Arek
  */
-public class RealmConfigurer {
+public class RealmFactory {
     
     public static JDBCRealm configureJDBCRealm(Map<String, String> mappedProperties) throws BadRealmException, NoSuchRealmException {
         JDBCRealm jdbc = new JDBCRealm();

@@ -12,7 +12,6 @@ import com.sun.enterprise.security.auth.realm.jdbc.JDBCRealm;
 import com.sun.enterprise.security.auth.realm.ldap.LDAPRealm;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
@@ -23,80 +22,111 @@ import java.util.logging.Level;
 import javax.security.auth.login.LoginException;
 import org.jvnet.hk2.annotations.Service;
 import pl.ark.chr.glassfish.realm.pam.services.RealmResolver;
+import pl.ark.chr.glassfish.realm.pam.util.PamConstants;
+import pl.ark.chr.glassfish.realm.pam.util.RealmWrapper;
 
 /**
  *
  * @author Arek
  */
-@Service(name = "CustomizablePamRealm")
+@Service(name = "UniversalPamRealm")
 public class PamRealm extends AppservRealm {
 
     public static final String NUMBER_OF_REALMS = "number_of_realms";
     public static final String REALM_BASENAME = "realm_";
-    
-    private List<Realm> registeredRealms = new ArrayList<>();
+
+    private List<RealmWrapper> registeredRealms = new ArrayList<>();
     private RealmResolver realmResolver = new RealmResolver();
     private Map<String, Vector> groupCache;
-    
+
     @Override
     public void init(Properties props) throws BadRealmException, NoSuchRealmException {
-        _logger.info("Must implement this custom init method");
+        _logger.info("Configuring UnversalPamRealm.");
         super.setProperty(JAAS_CONTEXT_PARAM, props.getProperty(JAAS_CONTEXT_PARAM));
-        
+
         int numberOfRealms = Integer.parseInt(props.getProperty(NUMBER_OF_REALMS));
-        
+
         for (int i = 0; i < numberOfRealms; i++) {
             String realmKey = REALM_BASENAME + Integer.toString(i);
             String realmProperties = props.getProperty(realmKey);
-            if(realmProperties == null) {
+            if (realmProperties == null) {
                 throw new NoSuchRealmException("No properties found for realm: " + realmKey);
             }
             registeredRealms.add(realmResolver.resolveRealm(realmProperties));
         }
-        
+
+//        registeredRealms = setRealmsOrder(registeredRealms);
+
         groupCache = new HashMap<>();
     }
 
     @Override
     public String getAuthType() {
         _logger.info("Getting auth type");
-        return "Customizable Pam Realm";
+        return "Universal Pam Realm";
     }
-    
+
     public String[] authenticate(String username, char[] password) throws LoginException {
-        String[] groups = null;
-        for (Realm registeredRealm : registeredRealms) {
-            _logger.info("iside the loop");
-            if(registeredRealm instanceof FileRealm) {
-                groups = ((FileRealm)registeredRealm).authenticate(username, password);
-                if(groups != null) {
-                    _logger.info("authenticated using file realm");
-                    setGroupNames(username, groups);
-                    return groups;
-                }
+        List<String> allGroups = new ArrayList<>();
+        
+        boolean optionalNegative = false;
+        boolean requiredFailed = false;
+        for (RealmWrapper registeredRealmWrapper : registeredRealms) {
+            String[] groups = null;
+            Realm registeredRealm = registeredRealmWrapper.getRealm();
+            if (registeredRealm instanceof FileRealm) {
+                groups = ((FileRealm) registeredRealm).authenticate(username, password);
             }
-            if(registeredRealm instanceof LDAPRealm) {
+            if (registeredRealm instanceof LDAPRealm) {
                 try {
-                    groups = ((LDAPRealm)registeredRealm).findAndBind(username, password);
-                } catch(LoginException ex) {
-                    _logger.log(Level.FINEST, "Nothing to worry, just not found in ldap");
-                }
-                if(groups != null) {
-                    _logger.info("authenticated using ldap realm");
-                    setGroupNames(username, groups);
-                    return groups;
+                    groups = ((LDAPRealm) registeredRealm).findAndBind(username, password);
+                } catch (LoginException ex) {
+                    _logger.log(Level.FINEST, "Nothing to worry, not found in ldap.");
                 }
             }
-            if(registeredRealm instanceof JDBCRealm) {
-                groups = ((JDBCRealm)registeredRealm).authenticate(username, password);
-                if(groups != null) {
-                    _logger.info("authenticated using jdbc realm");
-                    setGroupNames(username, groups);
-                    return groups;
-                }
+            if (registeredRealm instanceof JDBCRealm) {
+                groups = ((JDBCRealm) registeredRealm).authenticate(username, password);
+            }
+            
+            //Checking control values
+            if (registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_REQUIRED) && groups == null) {
+                requiredFailed = true;
+            }
+            
+            if (registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_REQUISITE) && groups == null) {
+                throw new LoginException("Login failed for: " + username + ". Requisite realm negative.");
+            }
+            
+//            if (registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_SUFFICIENT) && groups == null) {
+//                sufficientNegative = true;
+//            } else 
+                if (registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_SUFFICIENT)) {
+//                sufficientNegative = false;
+                break;
+            }
+
+            if (registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_OPTIONAL) && allGroups.isEmpty() && groups == null) {
+                optionalNegative = true;
+            } else if(registeredRealmWrapper.getControlValue().equals(PamConstants.CONTROL_OPTIONAL) && allGroups.isEmpty()) {
+                optionalNegative = false;
+            }
+
+            if (groups != null) {
+                allGroups.addAll(Arrays.asList(groups));
             }
         }
-        throw new LoginException("Login failed for: " + username);
+        
+        if (requiredFailed) {
+            throw new LoginException("Login failed for: " + username + ". Required realm negative.");
+        }
+//        if(sufficientNegative) {
+//            throw new LoginException("Login failed for: " + username + ". Last suffiecient realm negative.");
+//        }
+        if(allGroups.isEmpty() && optionalNegative) {
+            throw new LoginException("Login failed for: " + username + ". Optional realm negative.");
+        }
+        setGroupNames(username, (String[]) allGroups.toArray());
+        return (String[]) allGroups.toArray();
     }
 
     @Override
@@ -112,10 +142,29 @@ public class PamRealm extends AppservRealm {
     private void setGroupNames(String username, String[] groups) {
         Vector<String> userGroups = new Vector<>(groups.length + 1);
         userGroups.addAll(Arrays.asList(groups));
-        
-        synchronized(this) {
+
+        synchronized (this) {
             groupCache.put(username, userGroups);
         }
+    }
+
+    private List<RealmWrapper> setRealmsOrder(List<RealmWrapper> registeredRealms) {
+        List<RealmWrapper> orderedList = new ArrayList<>();
+        orderedList.addAll(getAllWithControlValue(registeredRealms, PamConstants.CONTROL_REQUIRED));
+        orderedList.addAll(getAllWithControlValue(registeredRealms, PamConstants.CONTROL_REQUISITE));
+        orderedList.addAll(getAllWithControlValue(registeredRealms, PamConstants.CONTROL_SUFFICIENT));
+        orderedList.addAll(getAllWithControlValue(registeredRealms, PamConstants.CONTROL_OPTIONAL));
+        return orderedList;
+    }
+
+    private List<RealmWrapper> getAllWithControlValue(List<RealmWrapper> registeredRealms, String controlValue) {
+        List<RealmWrapper> orderedList = new ArrayList<>();
+        for (RealmWrapper registeredRealm : registeredRealms) {
+            if (registeredRealm.getControlValue().equals(controlValue)) {
+                orderedList.add(registeredRealm);
+            }
+        }
+        return orderedList;
     }
 
 }

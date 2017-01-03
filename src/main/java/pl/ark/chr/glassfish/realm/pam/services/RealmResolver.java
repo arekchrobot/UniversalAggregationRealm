@@ -5,6 +5,7 @@ import com.sun.enterprise.security.auth.realm.NoSuchRealmException;
 import com.sun.enterprise.security.auth.realm.Realm;
 import java.util.HashMap;
 import java.util.Map;
+import pl.ark.chr.glassfish.realm.pam.util.RealmWrapper;
 
 /**
  *
@@ -15,12 +16,13 @@ public class RealmResolver {
     private static final String MAP_SPLLITER = ";";
     private static final String KEY_VALUE_SPLLITER = "=";
     private static final String REALM_TYPE = "realm-type";
+    private static final String CONTROL_VALUE = "control-value";
 
     private static final String JDBC_REALM = "jdbc";
     private static final String FILE_REALM = "file";
     private static final String LDAP_REALM = "ldap";
 
-    public Realm resolveRealm(String properties) throws BadRealmException, NoSuchRealmException {
+    public RealmWrapper resolveRealm(String properties) throws BadRealmException, NoSuchRealmException {
         Map<String, String> mappedProperties = resolveProperties(properties);
 
         return configureRealm(mappedProperties);
@@ -41,20 +43,20 @@ public class RealmResolver {
         return result;
     }
 
-    private Realm configureRealm(Map<String, String> mappedProperties) throws BadRealmException, NoSuchRealmException {
+    private RealmWrapper configureRealm(Map<String, String> mappedProperties) throws BadRealmException, NoSuchRealmException {
         String realmType = mappedProperties.get(REALM_TYPE);
         Realm newRealm = null;
         switch (realmType) {
             case JDBC_REALM: {
-                newRealm = RealmConfigurer.configureJDBCRealm(mappedProperties);
+                newRealm = RealmFactory.configureJDBCRealm(mappedProperties);
                 break;
             }
             case FILE_REALM: {
-                newRealm = RealmConfigurer.configureFileRealm(mappedProperties);
+                newRealm = RealmFactory.configureFileRealm(mappedProperties);
                 break;
             }
             case LDAP_REALM: {
-                newRealm = RealmConfigurer.configureLDAPRealm(mappedProperties);
+                newRealm = RealmFactory.configureLDAPRealm(mappedProperties);
                 break;
             }
         }
@@ -62,7 +64,9 @@ public class RealmResolver {
         if (newRealm == null) {
             throw new BadRealmException("No realm found with type: " + realmType);
         }
-
-        return newRealm;
+        RealmWrapper realmWrapper = new RealmWrapper();
+        realmWrapper.setRealm(newRealm);
+        realmWrapper.setControlValue(mappedProperties.get(CONTROL_VALUE));
+        return realmWrapper;
     }
 }
